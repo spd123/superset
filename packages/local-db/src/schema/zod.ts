@@ -35,6 +35,8 @@ export const pullRequestCommentSchema = z.object({
 	kind: z.enum(["review", "conversation"]).optional(),
 	path: z.string().optional(),
 	line: z.number().optional(),
+	isResolved: z.boolean().optional(),
+	threadId: z.string().optional(),
 });
 
 export type PullRequestComment = z.infer<typeof pullRequestCommentSchema>;
@@ -128,6 +130,10 @@ export const AGENT_PRESET_FIELDS = [
 
 export type AgentPresetField = (typeof AGENT_PRESET_FIELDS)[number];
 
+export const PROMPT_TRANSPORTS = ["argv", "stdin"] as const;
+
+export type PromptTransport = (typeof PROMPT_TRANSPORTS)[number];
+
 export const agentPresetOverrideSchema = z.object({
 	id: z.string(),
 	enabled: z.boolean().optional(),
@@ -157,8 +163,9 @@ export const agentCustomDefinitionSchema = z.object({
 	label: z.string(),
 	description: z.string().optional(),
 	command: z.string(),
-	promptCommand: z.string(),
+	promptCommand: z.string().optional(),
 	promptCommandSuffix: z.string().optional(),
+	promptTransport: z.enum(PROMPT_TRANSPORTS).optional(),
 	taskPromptTemplate: z.string(),
 	enabled: z.boolean().optional(),
 });

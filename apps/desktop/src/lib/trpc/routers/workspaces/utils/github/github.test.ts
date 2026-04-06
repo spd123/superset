@@ -3,15 +3,19 @@ import {
 	mergePullRequestComments,
 	parseConversationCommentsResponse,
 	parsePaginatedApiArray,
-	parseReviewCommentsResponse,
+	parseReviewThreadCommentsResponse,
 } from "./comments";
 import { resolveRemoteBranchNameForGitHubStatus } from "./github";
 import {
 	branchMatchesPR,
 	getPRHeadBranchCandidates,
 	prMatchesLocalBranch,
+	shouldAcceptPRMatch,
 } from "./pr-resolution";
-import { getPullRequestRepoArgs } from "./repo-context";
+import {
+	getPullRequestRepoArgs,
+	shouldRefreshCachedRepoContext,
+} from "./repo-context";
 
 describe("branchMatchesPR", () => {
 	test("matches same-repo branch exactly", () => {
@@ -70,22 +74,95 @@ describe("getPullRequestRepoArgs", () => {
 	});
 });
 
-describe("parseReviewCommentsResponse", () => {
-	test("normalizes inline review comments with file metadata", () => {
+describe("shouldRefreshCachedRepoContext", () => {
+	test("returns false when no cached repo context exists", () => {
 		expect(
-			parseReviewCommentsResponse([
+			shouldRefreshCachedRepoContext({
+				originUrl: "https://github.com/superset-sh/superset",
+				cachedRepoContext: null,
+			}),
+		).toBe(false);
+	});
+
+	test("returns false when the cached repo still matches origin", () => {
+		expect(
+			shouldRefreshCachedRepoContext({
+				originUrl: "https://github.com/superset-sh/superset",
+				cachedRepoContext: {
+					repoUrl: "https://github.com/superset-sh/superset",
+					upstreamUrl: "https://github.com/superset-sh/superset",
+					isFork: false,
+				},
+			}),
+		).toBe(false);
+	});
+
+	test("returns false when origin is missing", () => {
+		expect(
+			shouldRefreshCachedRepoContext({
+				originUrl: null,
+				cachedRepoContext: {
+					repoUrl: "https://github.com/superset-sh/superset",
+					upstreamUrl: "https://github.com/superset-sh/superset",
+					isFork: false,
+				},
+			}),
+		).toBe(false);
+	});
+
+	test("treats SSH and HTTPS forms of the same repo as equal", () => {
+		expect(
+			shouldRefreshCachedRepoContext({
+				originUrl: "git@github.com:Superset-Sh/superset.git",
+				cachedRepoContext: {
+					repoUrl: "https://github.com/superset-sh/superset",
+					upstreamUrl: "https://github.com/superset-sh/superset",
+					isFork: false,
+				},
+			}),
+		).toBe(false);
+	});
+
+	test("returns true when origin no longer matches the cached repo", () => {
+		expect(
+			shouldRefreshCachedRepoContext({
+				originUrl: "https://github.com/Kitenite/superset",
+				cachedRepoContext: {
+					repoUrl: "https://github.com/superset-sh/superset",
+					upstreamUrl: "https://github.com/superset-sh/superset",
+					isFork: false,
+				},
+			}),
+		).toBe(true);
+	});
+});
+
+describe("parseReviewThreadCommentsResponse", () => {
+	test("normalizes inline review-thread comments with file metadata", () => {
+		expect(
+			parseReviewThreadCommentsResponse([
 				{
-					id: 42,
-					user: {
-						login: "octocat",
-						avatar_url: "https://avatars.githubusercontent.com/u/1?v=4",
+					isResolved: false,
+					comments: {
+						nodes: [
+							{
+								databaseId: 42,
+								author: {
+									login: "octocat",
+									avatarUrl: "https://avatars.githubusercontent.com/u/1?v=4",
+								},
+								body: "Please rename this helper.",
+								createdAt: "2026-03-21T04:19:41Z",
+								url: "https://github.com/superset-sh/superset/pull/2681#discussion_r42",
+								path: "apps/desktop/src/file.ts",
+								line: 19,
+							},
+						],
+						pageInfo: {
+							hasNextPage: false,
+							endCursor: null,
+						},
 					},
-					body: "Please rename this helper.",
-					created_at: "2026-03-21T04:19:41Z",
-					html_url:
-						"https://github.com/superset-sh/superset/pull/2681#discussion_r42",
-					path: "apps/desktop/src/file.ts",
-					line: 19,
 				},
 			]),
 		).toEqual([
@@ -99,6 +176,89 @@ describe("parseReviewCommentsResponse", () => {
 				kind: "review",
 				path: "apps/desktop/src/file.ts",
 				line: 19,
+				isResolved: false,
+			},
+		]);
+	});
+
+	test("marks all comments in resolved threads as resolved", () => {
+		expect(
+			parseReviewThreadCommentsResponse([
+				{
+					isResolved: true,
+					comments: {
+						nodes: [
+							{
+								databaseId: 42,
+								author: {
+									login: "octocat",
+								},
+								body: "Please rename this helper.",
+								createdAt: "2026-03-21T04:19:41Z",
+								url: "https://github.com/superset-sh/superset/pull/2681#discussion_r42",
+								path: "apps/desktop/src/file.ts",
+								line: 19,
+							},
+						],
+						pageInfo: {
+							hasNextPage: false,
+							endCursor: null,
+						},
+					},
+				},
+			]),
+		).toEqual([
+			{
+				id: "review-42",
+				authorLogin: "octocat",
+				body: "Please rename this helper.",
+				createdAt: new Date("2026-03-21T04:19:41Z").getTime(),
+				url: "https://github.com/superset-sh/superset/pull/2681#discussion_r42",
+				kind: "review",
+				path: "apps/desktop/src/file.ts",
+				line: 19,
+				isResolved: true,
+			},
+		]);
+	});
+
+	test("falls back to the GraphQL node id when databaseId is unavailable", () => {
+		expect(
+			parseReviewThreadCommentsResponse([
+				{
+					isResolved: false,
+					comments: {
+						nodes: [
+							{
+								id: "PRRC_kwDOQGUlEs4abc",
+								author: {
+									login: "octocat",
+								},
+								body: "Please rename this helper.",
+								createdAt: "2026-03-21T04:19:41Z",
+								url: "https://github.com/superset-sh/superset/pull/2681#discussion_r42",
+								path: "apps/desktop/src/file.ts",
+								originalLine: 19,
+							},
+						],
+						pageInfo: {
+							hasNextPage: false,
+							endCursor: null,
+						},
+					},
+				},
+			]),
+		).toEqual([
+			{
+				id: "review-node-PRRC_kwDOQGUlEs4abc",
+				authorLogin: "octocat",
+				body: "Please rename this helper.",
+				createdAt: new Date("2026-03-21T04:19:41Z").getTime(),
+				url: "https://github.com/superset-sh/superset/pull/2681#discussion_r42",
+				kind: "review",
+				path: "apps/desktop/src/file.ts",
+				line: 19,
+				isResolved: false,
 			},
 		]);
 	});
@@ -145,6 +305,7 @@ describe("parseConversationCommentsResponse", () => {
 				createdAt: new Date("2026-03-21T04:08:13Z").getTime(),
 				url: "https://github.com/superset-sh/superset/pull/2681#issuecomment-7",
 				kind: "conversation",
+				isResolved: false,
 			},
 		]);
 	});
@@ -161,6 +322,7 @@ describe("mergePullRequestComments", () => {
 						body: "Inline note",
 						createdAt: 200,
 						kind: "review",
+						isResolved: false,
 					},
 				],
 				[
@@ -170,6 +332,7 @@ describe("mergePullRequestComments", () => {
 						body: "Top-level note",
 						createdAt: 100,
 						kind: "conversation",
+						isResolved: false,
 					},
 				],
 			),
@@ -180,6 +343,7 @@ describe("mergePullRequestComments", () => {
 				body: "Inline note",
 				createdAt: 200,
 				kind: "review",
+				isResolved: false,
 			},
 			{
 				id: "conversation-7",
@@ -187,6 +351,7 @@ describe("mergePullRequestComments", () => {
 				body: "Top-level note",
 				createdAt: 100,
 				kind: "conversation",
+				isResolved: false,
 			},
 		]);
 	});
@@ -240,6 +405,53 @@ describe("prMatchesLocalBranch", () => {
 				headRepositoryOwner: null,
 			}),
 		).toBe(false);
+	});
+});
+
+describe("shouldAcceptPRMatch", () => {
+	test("keeps open PR matches even when local HEAD differs", () => {
+		expect(
+			shouldAcceptPRMatch({
+				localBranch: "feature/my-thing",
+				headSha: "local-head-sha",
+				pr: {
+					headRefName: "feature/my-thing",
+					headRefOid: "remote-head-sha",
+					headRepositoryOwner: null,
+					state: "OPEN",
+				},
+			}),
+		).toBe(true);
+	});
+
+	test("rejects historical PR matches when the head commit differs", () => {
+		expect(
+			shouldAcceptPRMatch({
+				localBranch: "feature/my-thing",
+				headSha: "new-head-sha",
+				pr: {
+					headRefName: "feature/my-thing",
+					headRefOid: "old-pr-head-sha",
+					headRepositoryOwner: null,
+					state: "MERGED",
+				},
+			}),
+		).toBe(false);
+	});
+
+	test("accepts historical PR matches when the head commit still matches", () => {
+		expect(
+			shouldAcceptPRMatch({
+				localBranch: "feature/my-thing",
+				headSha: "same-head-sha",
+				pr: {
+					headRefName: "feature/my-thing",
+					headRefOid: "same-head-sha",
+					headRepositoryOwner: null,
+					state: "MERGED",
+				},
+			}),
+		).toBe(true);
 	});
 });
 

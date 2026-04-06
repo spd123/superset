@@ -21,15 +21,10 @@ import {
 	CommandList,
 	CommandSeparator,
 } from "@superset/ui/command";
-import {
-	DropdownMenu,
-	DropdownMenuContent,
-	DropdownMenuItem,
-	DropdownMenuTrigger,
-} from "@superset/ui/dropdown-menu";
 import { Input } from "@superset/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@superset/ui/popover";
 import { toast } from "@superset/ui/sonner";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@superset/ui/tooltip";
 import { cn } from "@superset/ui/utils";
 import { useNavigate } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "framer-motion";
@@ -39,14 +34,7 @@ import {
 	PaperclipIcon,
 	PlusIcon,
 } from "lucide-react";
-import {
-	forwardRef,
-	useCallback,
-	useEffect,
-	useMemo,
-	useRef,
-	useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
 	GoArrowUpRight,
 	GoGitBranch,
@@ -60,12 +48,12 @@ import { AgentSelect } from "renderer/components/AgentSelect";
 import { LinkedIssuePill } from "renderer/components/Chat/ChatInterface/components/ChatInputFooter/components/LinkedIssuePill";
 import { IssueLinkCommand } from "renderer/components/Chat/ChatInterface/components/IssueLinkCommand";
 import { useAgentLaunchPreferences } from "renderer/hooks/useAgentLaunchPreferences";
+import { PLATFORM } from "renderer/hotkeys";
 import { electronTrpc } from "renderer/lib/electron-trpc";
 import { formatRelativeTime } from "renderer/lib/formatRelativeTime";
 import { resolveEffectiveWorkspaceBaseBranch } from "renderer/lib/workspaceBaseBranch";
 import { navigateToWorkspace } from "renderer/routes/_authenticated/_dashboard/utils/workspace-navigation";
 import { ProjectThumbnail } from "renderer/screens/main/components/WorkspaceSidebar/ProjectSection/ProjectThumbnail";
-import { useHotkeysStore } from "renderer/stores/hotkeys/store";
 import {
 	useClearPendingWorkspace,
 	useNewWorkspaceModalOpen,
@@ -123,46 +111,68 @@ export function PromptGroup(props: PromptGroupProps) {
 	return <PromptGroupInner {...props} />;
 }
 
-const PlusMenu = forwardRef<
-	HTMLDivElement,
-	{
-		onOpenIssueLink: () => void;
-		onOpenGitHubIssue: () => void;
-		onOpenPRLink: () => void;
-	}
->(function PlusMenu({ onOpenIssueLink, onOpenGitHubIssue, onOpenPRLink }, ref) {
+function AttachmentButtons({
+	anchorRef,
+	onOpenIssueLink,
+	onOpenGitHubIssue,
+	onOpenPRLink,
+}: {
+	anchorRef: React.RefObject<HTMLDivElement | null>;
+	onOpenIssueLink: () => void;
+	onOpenGitHubIssue: () => void;
+	onOpenPRLink: () => void;
+}) {
 	const attachments = usePromptInputAttachments();
 
 	return (
-		<div ref={ref}>
-			<DropdownMenu>
-				<DropdownMenuTrigger asChild>
-					<PromptInputButton className={`${PILL_BUTTON_CLASS} w-[22px]`}>
-						<PlusIcon className="size-3.5" />
+		<div ref={anchorRef} className="flex items-center gap-1">
+			<Tooltip>
+				<TooltipTrigger asChild>
+					<PromptInputButton
+						className={`${PILL_BUTTON_CLASS} w-[22px]`}
+						onClick={() => attachments.openFileDialog()}
+					>
+						<PaperclipIcon className="size-3.5" />
 					</PromptInputButton>
-				</DropdownMenuTrigger>
-				<DropdownMenuContent side="bottom" align="start" className="w-52">
-					<DropdownMenuItem onSelect={() => attachments.openFileDialog()}>
-						<PaperclipIcon className="size-4" />
-						Add attachment
-					</DropdownMenuItem>
-					<DropdownMenuItem onSelect={onOpenIssueLink}>
-						<SiLinear className="size-4" />
-						Link issue
-					</DropdownMenuItem>
-					<DropdownMenuItem onSelect={onOpenGitHubIssue}>
-						<GoIssueOpened className="size-4" />
-						Link GitHub issue
-					</DropdownMenuItem>
-					<DropdownMenuItem onSelect={onOpenPRLink}>
-						<LuGitPullRequest className="size-4" />
-						Link pull request
-					</DropdownMenuItem>
-				</DropdownMenuContent>
-			</DropdownMenu>
+				</TooltipTrigger>
+				<TooltipContent side="bottom">Add attachment</TooltipContent>
+			</Tooltip>
+			<Tooltip>
+				<TooltipTrigger asChild>
+					<PromptInputButton
+						className={`${PILL_BUTTON_CLASS} w-[22px]`}
+						onClick={onOpenIssueLink}
+					>
+						<SiLinear className="size-3.5" />
+					</PromptInputButton>
+				</TooltipTrigger>
+				<TooltipContent side="bottom">Link issue</TooltipContent>
+			</Tooltip>
+			<Tooltip>
+				<TooltipTrigger asChild>
+					<PromptInputButton
+						className={`${PILL_BUTTON_CLASS} w-[22px]`}
+						onClick={onOpenGitHubIssue}
+					>
+						<GoIssueOpened className="size-3.5" />
+					</PromptInputButton>
+				</TooltipTrigger>
+				<TooltipContent side="bottom">Link GitHub issue</TooltipContent>
+			</Tooltip>
+			<Tooltip>
+				<TooltipTrigger asChild>
+					<PromptInputButton
+						className={`${PILL_BUTTON_CLASS} w-[22px]`}
+						onClick={onOpenPRLink}
+					>
+						<LuGitPullRequest className="size-3.5" />
+					</PromptInputButton>
+				</TooltipTrigger>
+				<TooltipContent side="bottom">Link pull request</TooltipContent>
+			</Tooltip>
 		</div>
 	);
-});
+}
 
 function ProjectPickerPill({
 	selectedProject,
@@ -262,8 +272,8 @@ function ProjectPickerPill({
 	);
 }
 
-function BaseBranchPickerInline({
-	effectiveBaseBranch,
+function CompareBaseBranchPickerInline({
+	effectiveCompareBaseBranch,
 	defaultBranch,
 	isBranchesLoading,
 	isBranchesError,
@@ -273,11 +283,11 @@ function BaseBranchPickerInline({
 	activeWorkspacesByBranch,
 	externalWorktreeBranches,
 	modKey,
-	onSelectBaseBranch,
+	onSelectCompareBaseBranch,
 	onOpenWorktree,
 	onOpenActiveWorkspace,
 }: {
-	effectiveBaseBranch: string | null;
+	effectiveCompareBaseBranch: string | null;
 	defaultBranch?: string;
 	isBranchesLoading: boolean;
 	isBranchesError: boolean;
@@ -287,7 +297,7 @@ function BaseBranchPickerInline({
 	activeWorkspacesByBranch: Map<string, string>;
 	externalWorktreeBranches: Set<string>;
 	modKey: string;
-	onSelectBaseBranch: (branchName: string) => void;
+	onSelectCompareBaseBranch: (branchName: string) => void;
 	onOpenWorktree: (action: OpenableWorktreeAction) => void;
 	onOpenActiveWorkspace: (workspaceId: string) => void;
 }) {
@@ -337,7 +347,7 @@ function BaseBranchPickerInline({
 						<span className="h-2.5 w-14 rounded-sm bg-muted-foreground/15 animate-pulse" />
 					) : (
 						<span className="font-mono truncate">
-							{effectiveBaseBranch || "..."}
+							{effectiveCompareBaseBranch || "..."}
 						</span>
 					)}
 					<HiChevronUpDown className="size-3 shrink-0" />
@@ -418,7 +428,7 @@ function BaseBranchPickerInline({
 										} else if (openAction) {
 											onOpenWorktree(openAction);
 										} else {
-											onSelectBaseBranch(branch.name);
+											onSelectCompareBaseBranch(branch.name);
 										}
 										setOpen(false);
 									}}
@@ -455,7 +465,7 @@ function BaseBranchPickerInline({
 
 										{/* Show checkmark for selected base branch when not hovering */}
 										{!hasExistingWorkspace &&
-											effectiveBaseBranch === branch.name && (
+											effectiveCompareBaseBranch === branch.name && (
 												<HiCheck className="size-4 text-primary group-data-[selected=true]:hidden" />
 											)}
 
@@ -486,7 +496,7 @@ function BaseBranchPickerInline({
 												className="h-7 px-2.5 text-xs font-medium"
 												onClick={(e) => {
 													e.stopPropagation();
-													onSelectBaseBranch(branch.name);
+													onSelectCompareBaseBranch(branch.name);
 													setOpen(false);
 												}}
 											>
@@ -528,8 +538,7 @@ function PromptGroupInner({
 	onNewProject,
 }: PromptGroupProps) {
 	const navigate = useNavigate();
-	const platform = useHotkeysStore((state) => state.platform);
-	const modKey = platform === "darwin" ? "⌘" : "Ctrl";
+	const modKey = PLATFORM === "mac" ? "⌘" : "Ctrl";
 	const isNewWorkspaceModalOpen = useNewWorkspaceModalOpen();
 	const utils = electronTrpc.useUtils();
 	const {
@@ -548,7 +557,7 @@ function PromptGroupInner({
 	const setPendingWorkspace = useSetPendingWorkspace();
 	const setPendingWorkspaceStatus = useSetPendingWorkspaceStatus();
 	const {
-		baseBranch,
+		compareBaseBranch,
 		prompt,
 		runSetupScript,
 		workspaceName,
@@ -666,8 +675,8 @@ function PromptGroupInner({
 		return set;
 	}, [externalWorktrees]);
 
-	const effectiveBaseBranch = resolveEffectiveWorkspaceBaseBranch({
-		explicitBaseBranch: baseBranch,
+	const effectiveCompareBaseBranch = resolveEffectiveWorkspaceBaseBranch({
+		explicitBaseBranch: compareBaseBranch,
 		workspaceBaseBranch: project?.workspaceBaseBranch,
 		defaultBranch: branchData?.defaultBranch,
 		branches: branchData?.branches,
@@ -680,7 +689,7 @@ function PromptGroupInner({
 			return;
 		}
 		previousProjectIdRef.current = projectId;
-		updateDraft({ baseBranch: null });
+		updateDraft({ compareBaseBranch: null });
 	}, [projectId, updateDraft]);
 
 	const buildLaunchRequest = useCallback(
@@ -988,7 +997,7 @@ ${sanitizeText(truncatedBody)}`;
 										},
 									)
 								: aiBranchName) || undefined,
-						baseBranch: baseBranch || undefined,
+						compareBaseBranch: compareBaseBranch || undefined,
 					},
 					{
 						agentLaunchRequest: launchRequest ?? undefined,
@@ -1016,7 +1025,7 @@ ${sanitizeText(truncatedBody)}`;
 		}
 	}, [
 		attachments,
-		baseBranch,
+		compareBaseBranch,
 		branchName,
 		branchNameEdited,
 		buildLaunchRequest,
@@ -1043,8 +1052,20 @@ ${sanitizeText(truncatedBody)}`;
 		void handleCreate();
 	}, [handleCreate]);
 
-	const handleBaseBranchSelect = (selectedBaseBranch: string) => {
-		updateDraft({ baseBranch: selectedBaseBranch });
+	useEffect(() => {
+		if (!isNewWorkspaceModalOpen) return;
+		const handler = (e: KeyboardEvent) => {
+			if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+				e.preventDefault();
+				void handleCreate();
+			}
+		};
+		window.addEventListener("keydown", handler);
+		return () => window.removeEventListener("keydown", handler);
+	}, [isNewWorkspaceModalOpen, handleCreate]);
+
+	const handleCompareBaseBranchSelect = (selectedBaseBranch: string) => {
+		updateDraft({ compareBaseBranch: selectedBaseBranch });
 	};
 
 	const handleOpenWorktree = useCallback(
@@ -1151,7 +1172,7 @@ ${sanitizeText(truncatedBody)}`;
 		<div className="p-3 space-y-2">
 			<div className="flex items-center">
 				<Input
-					className="border-none bg-transparent text-base font-medium px-0 h-auto focus-visible:ring-0 placeholder:text-muted-foreground/40 min-w-0 flex-1"
+					className="border-none bg-transparent dark:bg-transparent shadow-none text-base font-medium px-0 h-auto focus-visible:ring-0 placeholder:text-muted-foreground/40 min-w-0 flex-1"
 					placeholder="Workspace name (optional)"
 					value={workspaceName}
 					onChange={(e) =>
@@ -1169,7 +1190,7 @@ ${sanitizeText(truncatedBody)}`;
 				<div className="shrink min-w-0 ml-auto max-w-[50%]">
 					<Input
 						className={cn(
-							"border-none bg-transparent text-xs font-mono text-muted-foreground/60 px-0 h-auto focus-visible:ring-0 placeholder:text-muted-foreground/30 focus:text-muted-foreground text-right placeholder:text-right overflow-hidden text-ellipsis",
+							"border-none bg-transparent dark:bg-transparent shadow-none text-xs font-mono text-muted-foreground/60 px-0 h-auto focus-visible:ring-0 placeholder:text-muted-foreground/30 focus:text-muted-foreground text-right placeholder:text-right overflow-hidden text-ellipsis",
 						)}
 						placeholder="branch name"
 						value={branchName}
@@ -1261,12 +1282,6 @@ ${sanitizeText(truncatedBody)}`;
 					className="min-h-10"
 					value={prompt}
 					onChange={(e) => updateDraft({ prompt: e.target.value })}
-					onKeyDown={(e) => {
-						if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-							e.preventDefault();
-							void handleCreate();
-						}
-					}}
 				/>
 				<PromptInputFooter>
 					<PromptInputTools className="gap-1.5">
@@ -1284,8 +1299,8 @@ ${sanitizeText(truncatedBody)}`;
 						/>
 					</PromptInputTools>
 					<div className="flex items-center gap-2">
-						<PlusMenu
-							ref={plusMenuRef}
+						<AttachmentButtons
+							anchorRef={plusMenuRef}
 							onOpenIssueLink={() =>
 								requestAnimationFrame(() => setIssueLinkOpen(true))
 							}
@@ -1322,6 +1337,8 @@ ${sanitizeText(truncatedBody)}`;
 							onOpenChange={setPRLinkOpen}
 							onSelect={setLinkedPR}
 							projectId={projectId}
+							githubOwner={project?.githubOwner ?? null}
+							repoName={project?.mainRepoPath.split("/").pop() ?? null}
 							anchorRef={plusMenuRef}
 						/>
 						<PromptInputSubmit
@@ -1368,8 +1385,8 @@ ${sanitizeText(truncatedBody)}`;
 								exit={{ opacity: 0, x: 8, filter: "blur(4px)" }}
 								transition={{ duration: 0.2, ease: "easeOut" }}
 							>
-								<BaseBranchPickerInline
-									effectiveBaseBranch={effectiveBaseBranch}
+								<CompareBaseBranchPickerInline
+									effectiveCompareBaseBranch={effectiveCompareBaseBranch}
 									defaultBranch={branchData?.defaultBranch}
 									isBranchesLoading={isBranchesLoading}
 									isBranchesError={isBranchesError}
@@ -1379,7 +1396,7 @@ ${sanitizeText(truncatedBody)}`;
 									activeWorkspacesByBranch={activeWorkspacesByBranch}
 									externalWorktreeBranches={externalWorktreeBranches}
 									modKey={modKey}
-									onSelectBaseBranch={handleBaseBranchSelect}
+									onSelectCompareBaseBranch={handleCompareBaseBranchSelect}
 									onOpenWorktree={handleOpenWorktree}
 									onOpenActiveWorkspace={handleOpenActiveWorkspace}
 								/>
@@ -1388,7 +1405,7 @@ ${sanitizeText(truncatedBody)}`;
 					</AnimatePresence>
 				</div>
 				<span className="text-[11px] text-muted-foreground/50">
-					{modKey}+↵ to create
+					{modKey}↵ to create
 				</span>
 			</div>
 		</div>

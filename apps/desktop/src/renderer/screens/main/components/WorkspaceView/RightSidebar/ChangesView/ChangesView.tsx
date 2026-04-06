@@ -1,18 +1,18 @@
-import {
-	AlertDialog,
-	AlertDialogContent,
-	AlertDialogDescription,
-	AlertDialogFooter,
-	AlertDialogHeader,
-	AlertDialogTitle,
-} from "@superset/ui/alert-dialog";
-import { Button } from "@superset/ui/button";
 import { toast } from "@superset/ui/sonner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@superset/ui/tabs";
+import { cn } from "@superset/ui/utils";
 import { useParams } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { electronTrpc } from "renderer/lib/electron-trpc";
+import {
+	getGitHubPRCommentsQueryPolicy,
+	getGitHubStatusQueryPolicy,
+} from "renderer/lib/githubQueryPolicy";
 import { useWorkspaceFileEvents } from "renderer/screens/main/components/WorkspaceView/hooks/useWorkspaceFileEvents";
+import {
+	checkSummaryIconConfig,
+	countOpenPullRequestComments,
+} from "renderer/screens/main/components/WorkspaceView/RightSidebar/ChangesView/components/ReviewPanel/utils";
 import { useBranchSyncInvalidation } from "renderer/screens/main/hooks/useBranchSyncInvalidation";
 import { useGitChangesStatus } from "renderer/screens/main/hooks/useGitChangesStatus";
 import { useChangesStore } from "renderer/stores/changes";
@@ -27,6 +27,7 @@ import { sidebarHeaderTabTriggerClassName } from "../headerTabStyles";
 import { CategorySection } from "./components/CategorySection";
 import { ChangesHeader } from "./components/ChangesHeader";
 import { CommitInput } from "./components/CommitInput";
+import { DiscardConfirmDialog } from "./components/DiscardConfirmDialog";
 import { ReviewPanel } from "./components/ReviewPanel";
 import { useOrderedSections } from "./hooks";
 import { getPRActionState, shouldAutoCreatePRAfterPublish } from "./utils";
@@ -42,10 +43,6 @@ interface ChangesViewProps {
 }
 
 const INACTIVE_BRANCH_REFETCH_INTERVAL_MS = 10_000;
-const GITHUB_STATUS_STALE_TIME_MS = 10_000;
-const GITHUB_STATUS_REFETCH_INTERVAL_MS = 10_000;
-const GITHUB_PR_COMMENTS_STALE_TIME_MS = 30_000;
-const GITHUB_PR_COMMENTS_REFETCH_INTERVAL_MS = 30_000;
 
 interface PendingChangesRefresh {
 	invalidateBranches: boolean;
@@ -93,6 +90,14 @@ export function ChangesView({
 	);
 	const worktreePath = workspace?.worktreePath;
 	const projectId = workspace?.projectId;
+	const activeTab = useChangesStore((s) => s.activeTab);
+	const githubStatusQueryPolicy = getGitHubStatusQueryPolicy(
+		"changes-sidebar",
+		{
+			hasWorkspaceId: !!workspaceId,
+			isActive,
+		},
+	);
 
 	const { status, isLoading, effectiveBaseBranch, branchData, refetch } =
 		useGitChangesStatus({
@@ -111,11 +116,7 @@ export function ChangesView({
 		refetch: refetchGithubStatus,
 	} = electronTrpc.workspaces.getGitHubStatus.useQuery(
 		{ workspaceId: workspaceId ?? "" },
-		{
-			enabled: !!workspaceId && isActive,
-			refetchInterval: isActive ? GITHUB_STATUS_REFETCH_INTERVAL_MS : false,
-			staleTime: GITHUB_STATUS_STALE_TIME_MS,
-		},
+		githubStatusQueryPolicy,
 	);
 
 	const stageAllMutation = electronTrpc.changes.stageAll.useMutation({
@@ -254,8 +255,12 @@ export function ChangesView({
 	const [showDiscardUnstagedDialog, setShowDiscardUnstagedDialog] =
 		useState(false);
 	const [showDiscardStagedDialog, setShowDiscardStagedDialog] = useState(false);
-	const [activeTab, setActiveTab] = useState<ChangesSidebarTab>("diffs");
 	const activePullRequest = githubStatus?.pr ?? null;
+	const githubPRCommentsQueryPolicy = getGitHubPRCommentsQueryPolicy({
+		hasWorkspaceId: !!workspaceId,
+		hasActivePullRequest: !!activePullRequest,
+		isActive,
+	});
 	const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const pendingRefreshRef = useRef<PendingChangesRefresh>({
 		invalidateBranches: false,
@@ -277,15 +282,7 @@ export function ChangesView({
 					}
 				: {}),
 		},
-		{
-			enabled: !!workspaceId && isActive && !!activePullRequest,
-			refetchInterval:
-				isActive && activePullRequest
-					? GITHUB_PR_COMMENTS_REFETCH_INTERVAL_MS
-					: false,
-			staleTime: GITHUB_PR_COMMENTS_STALE_TIME_MS,
-			refetchOnWindowFocus: false,
-		},
+		githubPRCommentsQueryPolicy,
 	);
 
 	useBranchSyncInvalidation({
@@ -323,6 +320,7 @@ export function ChangesView({
 		sectionOrder,
 		selectFile,
 		getSelectedFile,
+		setActiveTab,
 		toggleSection,
 		moveSection,
 		setFileListViewMode,
@@ -339,7 +337,6 @@ export function ChangesView({
 	// biome-ignore lint/correctness/useExhaustiveDependencies: reset on workspace change
 	useEffect(() => {
 		setExpandedCommits(new Set());
-		setActiveTab("diffs");
 	}, [worktreePath]);
 
 	useEffect(() => {
@@ -563,7 +560,6 @@ export function ChangesView({
 
 	const hasStagedChanges = stagedFiles.length > 0;
 	const hasExistingPR = !!activePullRequest;
-	const prUrl = activePullRequest?.url;
 	const hasGitHubRepo = !!githubStatus?.repoUrl;
 	const defaultBranch =
 		branchData?.defaultBranch ?? status?.defaultBranch ?? "";
@@ -684,7 +680,20 @@ export function ChangesView({
 	}
 
 	const againstMainCount = status.againstBase.length;
-	const reviewCommentCount = activePullRequest ? githubComments.length : 0;
+	const reviewCommentCount = activePullRequest
+		? countOpenPullRequestComments(githubComments)
+		: 0;
+	const relevantReviewTabChecks =
+		activePullRequest?.checks.filter(
+			(check) => check.status !== "skipped" && check.status !== "cancelled",
+		) ?? [];
+	const reviewTabChecksStatus =
+		relevantReviewTabChecks.length > 0
+			? (activePullRequest?.checksStatus ?? "none")
+			: "none";
+	const reviewTabChecksStatusConfig =
+		checkSummaryIconConfig[reviewTabChecksStatus];
+	const ReviewTabChecksIcon = reviewTabChecksStatusConfig.icon;
 
 	return (
 		<div className="flex flex-col flex-1 min-h-0">
@@ -694,10 +703,13 @@ export function ChangesView({
 				className="flex flex-1 min-h-0 flex-col gap-0"
 			>
 				<div className="h-8 shrink-0 border-b bg-background">
-					<TabsList className="flex h-full w-full items-stretch justify-start gap-0 rounded-none bg-transparent p-0">
+					<TabsList className="grid h-full w-full grid-cols-2 items-stretch gap-0 rounded-none bg-transparent p-0">
 						<TabsTrigger
 							value="diffs"
-							className={sidebarHeaderTabTriggerClassName}
+							className={cn(
+								sidebarHeaderTabTriggerClassName,
+								"min-w-0 w-full justify-center",
+							)}
 						>
 							<span>Diffs</span>
 							<span className="text-[11px] text-muted-foreground/60 tabular-nums">
@@ -706,12 +718,24 @@ export function ChangesView({
 						</TabsTrigger>
 						<TabsTrigger
 							value="review"
-							className={sidebarHeaderTabTriggerClassName}
+							className={cn(
+								sidebarHeaderTabTriggerClassName,
+								"min-w-0 w-full justify-center",
+							)}
 						>
 							<span>Review</span>
 							<span className="text-[11px] text-muted-foreground/60 tabular-nums">
 								{reviewCommentCount}
 							</span>
+							{activePullRequest ? (
+								<ReviewTabChecksIcon
+									className={cn(
+										"size-3 shrink-0",
+										reviewTabChecksStatusConfig.className,
+										reviewTabChecksStatus === "pending" && "animate-spin",
+									)}
+								/>
+							) : null}
 						</TabsTrigger>
 					</TabsList>
 				</div>
@@ -750,10 +774,9 @@ export function ChangesView({
 							pushCount={status.pushCount}
 							pullCount={status.pullCount}
 							hasUpstream={status.hasUpstream}
-							hasExistingPR={hasExistingPR}
+							pullRequest={activePullRequest ?? null}
 							canCreatePR={prActionState.canCreatePR}
 							shouldAutoCreatePRAfterPublish={shouldAutoCreatePR}
-							prUrl={prUrl}
 							onRefresh={handleRefresh}
 						/>
 					</div>
@@ -796,89 +819,37 @@ export function ChangesView({
 						comments={githubComments}
 						isLoading={isGitHubStatusLoading}
 						isCommentsLoading={isGitHubCommentsLoading}
+						workspaceId={workspaceId}
+						onCommentsChange={refetchGitHubComments}
 					/>
 				</TabsContent>
 			</Tabs>
 
-			<AlertDialog
+			<DiscardConfirmDialog
 				open={showDiscardUnstagedDialog}
 				onOpenChange={setShowDiscardUnstagedDialog}
-			>
-				<AlertDialogContent className="max-w-[340px] gap-0 p-0">
-					<AlertDialogHeader className="px-4 pt-4 pb-2">
-						<AlertDialogTitle className="font-medium">
-							Discard all unstaged changes?
-						</AlertDialogTitle>
-						<AlertDialogDescription>
-							This will revert all unstaged modifications and delete untracked
-							files. This action cannot be undone.
-						</AlertDialogDescription>
-					</AlertDialogHeader>
-					<AlertDialogFooter className="px-4 pb-4 pt-2 flex-row justify-end gap-2">
-						<Button
-							variant="ghost"
-							size="sm"
-							className="h-7 px-3 text-xs"
-							onClick={() => setShowDiscardUnstagedDialog(false)}
-						>
-							Cancel
-						</Button>
-						<Button
-							variant="destructive"
-							size="sm"
-							className="h-7 px-3 text-xs"
-							onClick={() => {
-								setShowDiscardUnstagedDialog(false);
-								discardAllUnstagedMutation.mutate({
-									worktreePath: worktreePath || "",
-								});
-							}}
-						>
-							Discard All
-						</Button>
-					</AlertDialogFooter>
-				</AlertDialogContent>
-			</AlertDialog>
+				title="Discard all unstaged changes?"
+				description="This will revert all unstaged modifications and delete untracked files. This action cannot be undone."
+				onConfirm={() =>
+					discardAllUnstagedMutation.mutate({
+						worktreePath: worktreePath || "",
+					})
+				}
+				confirmLabel="Discard All"
+			/>
 
-			<AlertDialog
+			<DiscardConfirmDialog
 				open={showDiscardStagedDialog}
 				onOpenChange={setShowDiscardStagedDialog}
-			>
-				<AlertDialogContent className="max-w-[340px] gap-0 p-0">
-					<AlertDialogHeader className="px-4 pt-4 pb-2">
-						<AlertDialogTitle className="font-medium">
-							Discard all staged changes?
-						</AlertDialogTitle>
-						<AlertDialogDescription>
-							This will unstage and revert all staged changes. Staged new files
-							will be deleted. This action cannot be undone.
-						</AlertDialogDescription>
-					</AlertDialogHeader>
-					<AlertDialogFooter className="px-4 pb-4 pt-2 flex-row justify-end gap-2">
-						<Button
-							variant="ghost"
-							size="sm"
-							className="h-7 px-3 text-xs"
-							onClick={() => setShowDiscardStagedDialog(false)}
-						>
-							Cancel
-						</Button>
-						<Button
-							variant="destructive"
-							size="sm"
-							className="h-7 px-3 text-xs"
-							onClick={() => {
-								setShowDiscardStagedDialog(false);
-								discardAllStagedMutation.mutate({
-									worktreePath: worktreePath || "",
-								});
-							}}
-						>
-							Discard All
-						</Button>
-					</AlertDialogFooter>
-				</AlertDialogContent>
-			</AlertDialog>
+				title="Discard all staged changes?"
+				description="This will unstage and revert all staged changes. Staged new files will be deleted. This action cannot be undone."
+				onConfirm={() =>
+					discardAllStagedMutation.mutate({
+						worktreePath: worktreePath || "",
+					})
+				}
+				confirmLabel="Discard All"
+			/>
 		</div>
 	);
 }

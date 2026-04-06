@@ -1,15 +1,18 @@
 export { createApiClient } from "./api";
 export { type CreateAppOptions, createApp } from "./app";
 export type { HostDb } from "./db";
-export type { AuthProvider } from "./providers/auth";
 export {
-	DeviceKeyAuthProvider,
-	JwtAuthProvider,
-} from "./providers/auth";
+	buildWorkspaceFilesystemEventsPath,
+	type WorkspaceFilesystemServerMessage,
+} from "./filesystem";
+export type { ApiAuthProvider } from "./providers/auth";
+export { DeviceKeyApiAuthProvider, JwtApiAuthProvider } from "./providers/auth";
 export {
 	CloudGitCredentialProvider,
 	LocalGitCredentialProvider,
 } from "./providers/git";
+export type { HostAuthProvider } from "./providers/host-auth";
+export { PskHostAuthProvider } from "./providers/host-auth";
 export type { ModelProviderRuntimeResolver } from "./providers/model-providers";
 export {
 	CloudModelProvider,

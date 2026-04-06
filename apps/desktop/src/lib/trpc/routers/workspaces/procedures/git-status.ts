@@ -19,9 +19,11 @@ import {
 	refreshDefaultBranch,
 } from "../utils/git";
 import {
+	clearGitHubCachesForWorktree,
 	fetchGitHubPRComments,
 	fetchGitHubPRStatus,
 	type PullRequestCommentsTarget,
+	resolveReviewThread,
 } from "../utils/github";
 
 const gitHubPRCommentsInputSchema = z.object({
@@ -63,6 +65,30 @@ function resolveCommentsPullRequestTarget({
 			isFork: input.isFork ?? githubStatus?.isFork ?? false,
 		},
 	};
+}
+
+function stripGitHubStatusTimestamp(
+	status: GitHubStatus | null | undefined,
+): Omit<GitHubStatus, "lastRefreshed"> | null {
+	if (!status) {
+		return null;
+	}
+
+	const { lastRefreshed: _lastRefreshed, ...rest } = status;
+	return rest;
+}
+
+function hasMeaningfulGitHubStatusChange({
+	current,
+	next,
+}: {
+	current: GitHubStatus | null | undefined;
+	next: GitHubStatus;
+}): boolean {
+	return (
+		JSON.stringify(stripGitHubStatusTimestamp(current)) !==
+		JSON.stringify(stripGitHubStatusTimestamp(next))
+	);
 }
 
 export const createGitStatusProcedures = () => {
@@ -165,7 +191,13 @@ export const createGitStatusProcedures = () => {
 
 				const freshStatus = await fetchGitHubPRStatus(worktree.path);
 
-				if (freshStatus) {
+				if (
+					freshStatus &&
+					hasMeaningfulGitHubStatusChange({
+						current: worktree.githubStatus,
+						next: freshStatus,
+					})
+				) {
 					localDb
 						.update(worktrees)
 						.set({ githubStatus: freshStatus })
@@ -200,6 +232,38 @@ export const createGitStatusProcedures = () => {
 						githubStatus: cachedGitHubStatus,
 					}),
 				});
+			}),
+
+		resolveReviewThread: publicProcedure
+			.input(
+				z.object({
+					workspaceId: z.string(),
+					threadId: z.string(),
+					resolve: z.boolean(),
+				}),
+			)
+			.mutation(async ({ input }) => {
+				const workspace = getWorkspace(input.workspaceId);
+				if (!workspace) {
+					throw new Error(`Workspace ${input.workspaceId} not found`);
+				}
+
+				const worktree = workspace.worktreeId
+					? getWorktree(workspace.worktreeId)
+					: null;
+				if (!worktree) {
+					throw new Error(
+						`Worktree for workspace ${input.workspaceId} not found`,
+					);
+				}
+
+				await resolveReviewThread({
+					worktreePath: worktree.path,
+					threadId: input.threadId,
+					resolve: input.resolve,
+				});
+
+				clearGitHubCachesForWorktree(worktree.path);
 			}),
 
 		getWorktreeInfo: publicProcedure

@@ -12,8 +12,10 @@ import { useEffect, useRef, useState } from "react";
 import {
 	LuArrowUpRight,
 	LuCheck,
+	LuCheckCheck,
 	LuCopy,
-	LuMessageSquareText,
+	LuLoaderCircle,
+	LuUndo2,
 } from "react-icons/lu";
 import { VscChevronRight } from "react-icons/vsc";
 import { electronTrpc } from "renderer/lib/electron-trpc";
@@ -29,9 +31,9 @@ import {
 	getCommentCopyActionKey,
 	getCommentKindText,
 	getCommentPreviewText,
-	prStateLabel,
 	resolveCheckDestinationUrl,
 	reviewDecisionConfig,
+	splitPullRequestComments,
 } from "./utils";
 
 interface ReviewPanelProps {
@@ -39,6 +41,8 @@ interface ReviewPanelProps {
 	comments?: PullRequestComment[];
 	isLoading?: boolean;
 	isCommentsLoading?: boolean;
+	workspaceId?: string;
+	onCommentsChange?: () => void;
 }
 
 export function ReviewPanel({
@@ -46,14 +50,24 @@ export function ReviewPanel({
 	comments = [],
 	isLoading = false,
 	isCommentsLoading = false,
+	workspaceId,
+	onCommentsChange,
 }: ReviewPanelProps) {
 	const [checksOpen, setChecksOpen] = useState(true);
 	const [commentsOpen, setCommentsOpen] = useState(true);
+	const [resolvedCommentsGroupOpen, setResolvedCommentsGroupOpen] =
+		useState(false);
 	const [copiedActionKey, setCopiedActionKey] = useState<string | null>(null);
+	const [resolvingThreadIds, setResolvingThreadIds] = useState<Set<string>>(
+		new Set(),
+	);
+	const [isResolvingAll, setIsResolvingAll] = useState(false);
 	const copiedActionResetTimeoutRef = useRef<ReturnType<
 		typeof setTimeout
 	> | null>(null);
 	const copyToClipboardMutation = electronTrpc.external.copyText.useMutation();
+	const resolveThreadMutation =
+		electronTrpc.workspaces.resolveReviewThread.useMutation();
 
 	useEffect(() => {
 		return () => {
@@ -101,49 +115,43 @@ export function ReviewPanel({
 		});
 	};
 
-	const handleCopyCommentsList = () => {
-		void copyTextToClipboard({
-			text: buildAllCommentsClipboardText(comments),
-			actionKey: ALL_COMMENTS_COPY_ACTION_KEY,
-			errorLabel: "Failed to copy comments",
-		});
+	const handleToggleResolve = (comment: PullRequestComment) => {
+		const threadId = comment.threadId;
+		if (!workspaceId || !threadId) return;
+
+		setResolvingThreadIds((prev) => new Set(prev).add(threadId));
+		resolveThreadMutation.mutate(
+			{
+				workspaceId,
+				threadId,
+				resolve: !comment.isResolved,
+			},
+			{
+				onSuccess: () => {
+					onCommentsChange?.();
+				},
+				onError: (error) => {
+					const message =
+						error instanceof Error ? error.message : "Unknown error";
+					toast.error(
+						`Failed to ${comment.isResolved ? "undo" : "mark as done"}: ${message}`,
+					);
+				},
+				onSettled: () => {
+					setResolvingThreadIds((prev) => {
+						const next = new Set(prev);
+						next.delete(threadId);
+						return next;
+					});
+				},
+			},
+		);
 	};
 
 	if (isLoading && !pr) {
 		return (
-			<div className="flex h-full flex-col overflow-y-auto px-2 py-2">
-				<div className="border-b border-border/70 px-0 pb-2">
-					<div className="flex items-center gap-2 px-2">
-						<Skeleton className="h-4 w-4 rounded-sm" />
-						<Skeleton className="h-4 flex-1" />
-						<Skeleton className="h-3 w-10" />
-					</div>
-					<div className="mt-2 flex items-center gap-2 px-2">
-						<Skeleton className="h-4 w-24 rounded-sm" />
-						<Skeleton className="h-3 w-28" />
-					</div>
-				</div>
-				<div className="border-b border-border/60 px-0 py-2">
-					<div className="flex items-center justify-between px-2 pb-1">
-						<Skeleton className="h-3 w-10" />
-						<Skeleton className="h-3 w-24" />
-					</div>
-					<div className="space-y-1 px-1">
-						<Skeleton className="h-8 w-full rounded-sm" />
-						<Skeleton className="h-8 w-full rounded-sm" />
-					</div>
-				</div>
-				<div className="px-0 py-2">
-					<div className="flex items-center justify-between px-2 pb-1">
-						<Skeleton className="h-3 w-14" />
-						<Skeleton className="h-3 w-6" />
-					</div>
-					<div className="space-y-1 px-1">
-						<Skeleton className="h-11 w-full rounded-sm" />
-						<Skeleton className="h-11 w-full rounded-sm" />
-						<Skeleton className="h-11 w-full rounded-sm" />
-					</div>
-				</div>
+			<div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+				Loading review...
 			</div>
 		);
 	}
@@ -157,10 +165,6 @@ export function ReviewPanel({
 	}
 
 	const requestedReviewers = pr.requestedReviewers ?? [];
-	const reviewLabel =
-		pr.reviewDecision === "pending" && requestedReviewers.length > 0
-			? `Awaiting ${requestedReviewers.join(", ")}`
-			: reviewDecisionConfig[pr.reviewDecision].label;
 
 	const relevantChecks = pr.checks.filter(
 		(check) => check.status !== "skipped" && check.status !== "cancelled",
@@ -175,51 +179,214 @@ export function ReviewPanel({
 	const checksStatus = relevantChecks.length > 0 ? pr.checksStatus : "none";
 	const checksStatusConfig = checkSummaryIconConfig[checksStatus];
 	const ChecksStatusIcon = checksStatusConfig.icon;
-	const hasComments = comments.length > 0;
+	const { active: activeComments, resolved: resolvedComments } =
+		splitPullRequestComments(comments);
 	const commentsCountLabel = isCommentsLoading ? "..." : comments.length;
 	const copyAllCommentsLabel =
 		copiedActionKey === ALL_COMMENTS_COPY_ACTION_KEY ? "Copied" : "Copy all";
 
+	const handleCopyCommentsList = () => {
+		void copyTextToClipboard({
+			text: buildAllCommentsClipboardText(activeComments),
+			actionKey: ALL_COMMENTS_COPY_ACTION_KEY,
+			errorLabel: "Failed to copy comments",
+		});
+	};
+
+	const uniqueResolvableThreadIds = [
+		...new Set(
+			activeComments.map((c) => c.threadId).filter((id): id is string => !!id),
+		),
+	];
+	const handleResolveAll = async () => {
+		if (!workspaceId || uniqueResolvableThreadIds.length === 0) return;
+
+		const batchIds = uniqueResolvableThreadIds;
+		setIsResolvingAll(true);
+		setResolvingThreadIds((prev) => new Set([...prev, ...batchIds]));
+
+		try {
+			const results = await Promise.allSettled(
+				batchIds.map((threadId) =>
+					resolveThreadMutation.mutateAsync({
+						workspaceId,
+						threadId,
+						resolve: true,
+					}),
+				),
+			);
+			const failed = results.filter((r) => r.status === "rejected");
+			if (results.some((r) => r.status === "fulfilled")) {
+				onCommentsChange?.();
+			}
+			if (failed.length > 0) {
+				toast.error(
+					`Failed to mark ${failed.length} thread${failed.length === 1 ? "" : "s"} as done`,
+				);
+			}
+		} finally {
+			setIsResolvingAll(false);
+			setResolvingThreadIds((prev) => {
+				const next = new Set(prev);
+				for (const id of batchIds) {
+					next.delete(id);
+				}
+				return next;
+			});
+		}
+	};
+
+	const renderCommentList = (list: PullRequestComment[]) =>
+		list.map((comment) => {
+			const age = formatShortAge(comment.createdAt);
+			const commentCopyActionKey = getCommentCopyActionKey(comment.id);
+			const isCopied = copiedActionKey === commentCopyActionKey;
+			const content = (
+				<>
+					<Avatar className="mt-0.5 size-4 shrink-0">
+						{comment.avatarUrl ? (
+							<AvatarImage src={comment.avatarUrl} alt={comment.authorLogin} />
+						) : null}
+						<AvatarFallback className="text-[10px] font-medium">
+							{getCommentAvatarFallback(comment.authorLogin)}
+						</AvatarFallback>
+					</Avatar>
+					<div className="min-w-0 flex-1">
+						<div className="flex items-center gap-1.5">
+							<span className="truncate text-xs font-medium text-foreground">
+								{comment.authorLogin}
+							</span>
+							<span className="shrink-0 rounded border border-border/70 bg-muted/35 px-1 py-0 text-[9px] uppercase tracking-wide text-muted-foreground">
+								{getCommentKindText(comment)}
+							</span>
+							<span className="flex-1" />
+							{age ? (
+								<span className="shrink-0 text-[10px] text-muted-foreground">
+									{age}
+								</span>
+							) : null}
+						</div>
+						<p className="mt-0.5 line-clamp-1 text-xs leading-4 text-muted-foreground">
+							{getCommentPreviewText(comment.body)}
+						</p>
+					</div>
+				</>
+			);
+
+			return (
+				<div
+					key={comment.id}
+					className="group relative flex items-start gap-1 rounded-sm px-1.5 py-1 transition-colors hover:bg-accent/50"
+				>
+					{comment.url ? (
+						<a
+							href={comment.url}
+							target="_blank"
+							rel="noopener noreferrer"
+							className="flex min-w-0 flex-1 items-start gap-2"
+						>
+							{content}
+						</a>
+					) : (
+						<div className="flex min-w-0 flex-1 items-start gap-2">
+							{content}
+						</div>
+					)}
+					<div className="absolute right-0.5 top-0.5 flex items-center gap-0.5 rounded-sm bg-background/90 px-0.5 py-0.5 shadow-sm opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+						{comment.threadId && workspaceId ? (
+							<button
+								type="button"
+								className="inline-flex size-5 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+								onClick={(event) => {
+									event.preventDefault();
+									event.stopPropagation();
+									handleToggleResolve(comment);
+								}}
+								disabled={resolvingThreadIds.has(comment.threadId)}
+								aria-label={comment.isResolved ? "Undo done" : "Mark as done"}
+							>
+								{resolvingThreadIds.has(comment.threadId) ? (
+									<LuLoaderCircle className="size-3 animate-spin" />
+								) : comment.isResolved ? (
+									<LuUndo2 className="size-3" />
+								) : (
+									<LuCheckCheck className="size-3" />
+								)}
+							</button>
+						) : null}
+						<button
+							type="button"
+							className="inline-flex size-5 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+							onClick={(event) => {
+								event.preventDefault();
+								event.stopPropagation();
+								handleCopySingleComment(comment);
+							}}
+							aria-label={isCopied ? "Copied comment" : "Copy comment"}
+						>
+							{isCopied ? (
+								<LuCheck className="size-3" />
+							) : (
+								<LuCopy className="size-3" />
+							)}
+						</button>
+						{comment.url ? (
+							<a
+								href={comment.url}
+								target="_blank"
+								rel="noopener noreferrer"
+								className="inline-flex size-5 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+								aria-label="Open comment on GitHub"
+							>
+								<LuArrowUpRight className="size-3" />
+							</a>
+						) : null}
+					</div>
+				</div>
+			);
+		});
+
 	return (
 		<div className="flex h-full min-h-0 flex-col overflow-y-auto">
-			<div className="border-b border-border/70 px-2 py-2">
-				<div className="flex items-center gap-1.5">
+			<div className="px-2 py-2 space-y-1.5">
+				<a
+					href={pr.url}
+					target="_blank"
+					rel="noopener noreferrer"
+					className="group flex items-center gap-1.5 cursor-pointer"
+				>
 					<PRIcon state={pr.state} className="size-4 shrink-0" />
-					<a
-						href={pr.url}
-						target="_blank"
-						rel="noopener noreferrer"
-						className="min-w-0 flex-1 truncate text-xs font-medium text-foreground hover:underline"
+					<span
+						className="min-w-0 flex-1 truncate text-xs font-medium text-foreground"
 						title={pr.title}
 					>
 						{pr.title}
-					</a>
-					<span className="shrink-0 font-mono text-[10px] text-muted-foreground">
-						#{pr.number}
 					</span>
-				</div>
-
-				<div className="mt-1.5 flex items-center gap-1.5">
+					<LuArrowUpRight className="size-3.5 shrink-0 text-muted-foreground/70 opacity-0 transition-opacity group-hover:opacity-100" />
+				</a>
+				<div className="flex items-center gap-1.5">
 					<span
 						className={cn(
-							"shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-medium",
+							"shrink-0 rounded-sm px-1.5 py-0.5 text-[10px] font-medium",
 							reviewDecisionConfig[pr.reviewDecision].className,
 						)}
 					>
 						{reviewDecisionConfig[pr.reviewDecision].label}
 					</span>
-					<span className="truncate text-[10px] text-muted-foreground">
-						{requestedReviewers.length > 0
-							? reviewLabel
-							: prStateLabel[pr.state]}
-					</span>
+					{requestedReviewers.length > 0 && (
+						<span className="truncate text-[10px] text-muted-foreground">
+							Awaiting {requestedReviewers.join(", ")}
+						</span>
+					)}
 				</div>
 			</div>
+
+			<div className="border-b border-border/70 my-1" />
 
 			<Collapsible open={checksOpen} onOpenChange={setChecksOpen}>
 				<CollapsibleTrigger
 					className={cn(
-						"group flex w-full items-center justify-between gap-2 px-2 py-1.5 text-left min-w-0",
+						"flex w-full min-w-0 items-center justify-between gap-2 px-2 py-1.5 text-left",
 						"hover:bg-accent/30 cursor-pointer transition-colors",
 					)}
 				>
@@ -254,8 +421,8 @@ export function ReviewPanel({
 				</CollapsibleTrigger>
 				<CollapsibleContent className="px-0.5 pb-1 min-w-0 overflow-hidden">
 					{relevantChecks.length === 0 ? (
-						<div className="px-1.5 py-1.5 text-xs text-muted-foreground">
-							No active checks reported for this pull request yet.
+						<div className="px-1.5 py-1 text-xs text-muted-foreground">
+							No checks reported.
 						</div>
 					) : (
 						relevantChecks.map((check) => {
@@ -271,10 +438,10 @@ export function ReviewPanel({
 									rel="noopener noreferrer"
 									className="group block"
 								>
-									<div className="flex min-w-0 items-center gap-1.5 rounded-sm px-1.5 py-1.5 text-xs transition-colors hover:bg-accent/30">
+									<div className="flex min-w-0 items-center gap-1 rounded-sm px-1.5 py-1 text-xs transition-colors hover:bg-accent/50">
 										<CheckIcon
 											className={cn(
-												"size-3.5 shrink-0",
+												"size-3 shrink-0",
 												className,
 												check.status === "pending" && "animate-spin",
 											)}
@@ -293,11 +460,11 @@ export function ReviewPanel({
 							) : (
 								<div
 									key={check.name}
-									className="flex min-w-0 items-center gap-1.5 rounded-sm px-1.5 py-1.5 text-xs"
+									className="flex min-w-0 items-center gap-1 rounded-sm px-1.5 py-1 text-xs"
 								>
 									<CheckIcon
 										className={cn(
-											"size-3.5 shrink-0",
+											"size-3 shrink-0",
 											className,
 											check.status === "pending" && "animate-spin",
 										)}
@@ -315,15 +482,17 @@ export function ReviewPanel({
 				</CollapsibleContent>
 			</Collapsible>
 
+			<div className="border-b border-border/70 my-1" />
+
 			<Collapsible
 				open={commentsOpen}
 				onOpenChange={setCommentsOpen}
-				className="flex min-h-0 flex-1 flex-col"
+				className="min-w-0"
 			>
-				<div className="group flex min-w-0 items-center">
+				<div className="flex min-w-0 items-center">
 					<CollapsibleTrigger
 						className={cn(
-							"flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 text-left",
+							"flex flex-1 min-w-0 items-center gap-1.5 px-2 py-1.5 text-left",
 							"hover:bg-accent/30 cursor-pointer transition-colors",
 						)}
 					>
@@ -333,141 +502,88 @@ export function ReviewPanel({
 								commentsOpen && "rotate-90",
 							)}
 						/>
-						<LuMessageSquareText className="size-3.5 shrink-0 text-muted-foreground" />
 						<span className="text-xs font-medium truncate">Comments</span>
 						<span className="text-[10px] text-muted-foreground shrink-0">
 							{commentsCountLabel}
 						</span>
 					</CollapsibleTrigger>
-					{hasComments && (
-						<button
-							type="button"
-							className="mr-1 flex items-center gap-1 rounded-sm px-1.5 py-1 text-[10px] text-muted-foreground transition-colors hover:bg-accent/30 hover:text-foreground"
-							onClick={(event) => {
-								event.preventDefault();
-								event.stopPropagation();
-								handleCopyCommentsList();
-							}}
-						>
-							{copiedActionKey === ALL_COMMENTS_COPY_ACTION_KEY ? (
-								<LuCheck className="size-3" />
-							) : (
-								<LuCopy className="size-3" />
+					{activeComments.length > 0 && (
+						<div className="mr-1.5 flex items-center gap-1">
+							{uniqueResolvableThreadIds.length > 0 && workspaceId && (
+								<button
+									type="button"
+									className="shrink-0 flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[10px] text-muted-foreground transition-colors hover:bg-accent/30 hover:text-foreground disabled:opacity-50"
+									onClick={() => void handleResolveAll()}
+									disabled={isResolvingAll}
+								>
+									{isResolvingAll ? (
+										<LuLoaderCircle className="size-3 animate-spin" />
+									) : (
+										<LuCheckCheck className="size-3" />
+									)}
+									<span>Mark all done</span>
+								</button>
 							)}
-							<span>{copyAllCommentsLabel}</span>
-						</button>
+							<button
+								type="button"
+								className="shrink-0 flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[10px] text-muted-foreground transition-colors hover:bg-accent/30 hover:text-foreground"
+								onClick={handleCopyCommentsList}
+							>
+								{copiedActionKey === ALL_COMMENTS_COPY_ACTION_KEY ? (
+									<LuCheck className="size-3" />
+								) : (
+									<LuCopy className="size-3" />
+								)}
+								<span>{copyAllCommentsLabel}</span>
+							</button>
+						</div>
 					)}
 				</div>
-				<CollapsibleContent className="min-h-0 flex-1 overflow-hidden">
-					<div className="h-full overflow-y-auto px-0.5 py-1">
-						{isCommentsLoading ? (
-							<div className="space-y-1 px-1">
-								<Skeleton className="h-11 w-full rounded-sm" />
-								<Skeleton className="h-11 w-full rounded-sm" />
-								<Skeleton className="h-11 w-full rounded-sm" />
-							</div>
-						) : comments.length === 0 ? (
-							<div className="px-1.5 py-1.5 text-xs text-muted-foreground">
-								No comments yet.
-							</div>
-						) : (
-							comments.map((comment) => {
-								const age = formatShortAge(comment.createdAt);
-								const commentCopyActionKey = getCommentCopyActionKey(
-									comment.id,
-								);
-								const isCopied = copiedActionKey === commentCopyActionKey;
-								const content = (
-									<>
-										<Avatar className="mt-0.5 size-5 shrink-0">
-											{comment.avatarUrl ? (
-												<AvatarImage
-													src={comment.avatarUrl}
-													alt={comment.authorLogin}
-												/>
-											) : null}
-											<AvatarFallback className="text-[10px] font-medium">
-												{getCommentAvatarFallback(comment.authorLogin)}
-											</AvatarFallback>
-										</Avatar>
-										<div className="min-w-0 flex-1">
-											<div className="flex items-center gap-1.5">
-												<span className="truncate text-xs font-medium text-foreground">
-													{comment.authorLogin}
-												</span>
-												<span className="shrink-0 rounded border border-border/70 bg-muted/35 px-1 py-0 text-[9px] uppercase tracking-wide text-muted-foreground">
-													{getCommentKindText(comment)}
-												</span>
-												{age && (
-													<span className="shrink-0 text-[10px] text-muted-foreground">
-														{age}
-													</span>
-												)}
-											</div>
-											<p className="mt-0.5 line-clamp-1 text-xs leading-4 text-muted-foreground">
-												{getCommentPreviewText(comment.body)}
-											</p>
-										</div>
-									</>
-								);
-
-								return (
-									<div
-										key={comment.id}
-										className="group flex items-start gap-1 rounded-sm px-1.5 py-1.5 transition-colors hover:bg-accent/30"
-									>
-										{comment.url ? (
-											<a
-												href={comment.url}
-												target="_blank"
-												rel="noopener noreferrer"
-												className="flex min-w-0 flex-1 items-start gap-2"
-											>
-												{content}
-											</a>
-										) : (
-											<div className="flex min-w-0 flex-1 items-start gap-2">
-												{content}
-											</div>
-										)}
-										<div className="mt-0.5 flex shrink-0 flex-col gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-											{comment.url ? (
-												<a
-													href={comment.url}
-													target="_blank"
-													rel="noopener noreferrer"
-													className="inline-flex size-5 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-													aria-label="Open comment on GitHub"
-												>
-													<LuArrowUpRight className="size-3" />
-												</a>
-											) : null}
-											<button
-												type="button"
-												className="inline-flex size-5 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-												onClick={(event) => {
-													event.preventDefault();
-													event.stopPropagation();
-													handleCopySingleComment(comment);
-												}}
-												aria-label={
-													isCopied ? "Copied comment" : "Copy comment"
-												}
-											>
-												{isCopied ? (
-													<LuCheck className="size-3" />
-												) : (
-													<LuCopy className="size-3" />
-												)}
-											</button>
-										</div>
-									</div>
-								);
-							})
-						)}
-					</div>
+				<CollapsibleContent className="px-0.5 pb-1 min-w-0 overflow-hidden">
+					{isCommentsLoading ? (
+						<div className="space-y-1 px-1">
+							<Skeleton className="h-11 w-full rounded-sm" />
+							<Skeleton className="h-11 w-full rounded-sm" />
+							<Skeleton className="h-11 w-full rounded-sm" />
+						</div>
+					) : comments.length === 0 ? (
+						<div className="px-1.5 py-1 text-xs text-muted-foreground">
+							No comments yet.
+						</div>
+					) : (
+						renderCommentList(activeComments)
+					)}
 				</CollapsibleContent>
 			</Collapsible>
+
+			{resolvedComments.length > 0 && (
+				<Collapsible
+					open={resolvedCommentsGroupOpen}
+					onOpenChange={setResolvedCommentsGroupOpen}
+					className="min-w-0"
+				>
+					<CollapsibleTrigger
+						className={cn(
+							"flex w-full min-w-0 items-center gap-1.5 px-2 py-1.5 text-left",
+							"hover:bg-accent/30 cursor-pointer transition-colors",
+						)}
+					>
+						<VscChevronRight
+							className={cn(
+								"size-3 text-muted-foreground shrink-0 transition-transform duration-150",
+								resolvedCommentsGroupOpen && "rotate-90",
+							)}
+						/>
+						<span className="text-xs font-medium truncate">Resolved</span>
+						<span className="text-[10px] text-muted-foreground shrink-0">
+							{resolvedComments.length}
+						</span>
+					</CollapsibleTrigger>
+					<CollapsibleContent className="px-0.5 pb-1 min-w-0 overflow-hidden">
+						{renderCommentList(resolvedComments)}
+					</CollapsibleContent>
+				</Collapsible>
+			)}
 		</div>
 	);
 }

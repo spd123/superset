@@ -1,5 +1,5 @@
 import { cn } from "@superset/ui/utils";
-import { LuCloud, LuFolderGit2, LuLaptop } from "react-icons/lu";
+import { LuCloud, LuGitMerge, LuLaptop } from "react-icons/lu";
 import { AsciiSpinner } from "renderer/screens/main/components/AsciiSpinner";
 import { StatusIndicator } from "renderer/screens/main/components/StatusIndicator";
 import type { ActivePaneStatus } from "shared/tabs-types";
@@ -10,6 +10,7 @@ interface DashboardSidebarWorkspaceIconProps {
 	isActive: boolean;
 	variant: "collapsed" | "expanded";
 	workspaceStatus?: ActivePaneStatus | null;
+	creationStatus?: "preparing" | "generating-branch" | "creating";
 }
 
 const OVERLAY_POSITION = {
@@ -22,12 +23,13 @@ export function DashboardSidebarWorkspaceIcon({
 	isActive,
 	variant,
 	workspaceStatus = null,
+	creationStatus,
 }: DashboardSidebarWorkspaceIconProps) {
 	const overlayPosition = OVERLAY_POSITION[variant];
 
 	return (
 		<>
-			{workspaceStatus === "working" ? (
+			{creationStatus || workspaceStatus === "working" ? (
 				<AsciiSpinner className="text-base" />
 			) : hostType === "cloud" ? (
 				<LuCloud
@@ -48,7 +50,7 @@ export function DashboardSidebarWorkspaceIcon({
 					strokeWidth={1.75}
 				/>
 			) : (
-				<LuFolderGit2
+				<LuGitMerge
 					className={cn(
 						"size-4 transition-colors",
 						variant === "expanded" && "transition-colors",

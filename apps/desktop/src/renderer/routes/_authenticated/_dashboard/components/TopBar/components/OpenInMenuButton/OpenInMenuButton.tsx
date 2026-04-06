@@ -10,15 +10,13 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@superset/ui/tooltip";
 import { cn } from "@superset/ui/utils";
 import { memo, useCallback, useMemo } from "react";
 import { HiChevronDown } from "react-icons/hi2";
-import { LuExternalLink } from "react-icons/lu";
-import { HotkeyTooltipContent } from "renderer/components/HotkeyTooltipContent";
 import {
 	getAppOption,
 	OpenInExternalDropdownItems,
 } from "renderer/components/OpenInExternalDropdown";
+import { HotkeyLabel, useHotkey, useHotkeyDisplay } from "renderer/hotkeys";
 import { electronTrpc } from "renderer/lib/electron-trpc";
 import { useThemeStore } from "renderer/stores";
-import { useHotkeyText } from "renderer/stores/hotkeys";
 
 interface OpenInMenuButtonProps {
 	worktreePath: string;
@@ -37,6 +35,7 @@ export const OpenInMenuButton = memo(function OpenInMenuButton({
 		{ projectId: projectId as string },
 		{ enabled: !!projectId, staleTime: 30000 },
 	);
+	const resolvedApp: ExternalApp = defaultApp ?? "finder";
 	const openInApp = electronTrpc.external.openInApp.useMutation({
 		onSuccess: () => {
 			if (projectId) {
@@ -51,27 +50,21 @@ export const OpenInMenuButton = memo(function OpenInMenuButton({
 	});
 
 	const currentApp = useMemo(
-		() => (defaultApp ? (getAppOption(defaultApp) ?? null) : null),
-		[defaultApp],
+		() => getAppOption(resolvedApp) ?? null,
+		[resolvedApp],
 	);
-	const openInShortcut = useHotkeyText("OPEN_IN_APP");
-	const copyPathShortcut = useHotkeyText("COPY_PATH");
-	const showOpenInShortcut = openInShortcut !== "Unassigned";
-	const showCopyPathShortcut = copyPathShortcut !== "Unassigned";
+	const openInDisplay = useHotkeyDisplay("OPEN_IN_APP");
+	const copyPathDisplay = useHotkeyDisplay("COPY_PATH");
+	const showOpenInShortcut = openInDisplay.text !== "Unassigned";
+	const showCopyPathShortcut = copyPathDisplay.text !== "Unassigned";
 	const isLoading = openInApp.isPending || copyPath.isPending;
 
 	const isDark = activeTheme?.type === "dark";
 
 	const handleOpenInEditor = useCallback(() => {
 		if (openInApp.isPending || copyPath.isPending) return;
-		if (!defaultApp) {
-			toast.error("No default editor configured", {
-				description: "Open a project in an editor first to set a default.",
-			});
-			return;
-		}
-		openInApp.mutate({ path: worktreePath, app: defaultApp, projectId });
-	}, [worktreePath, defaultApp, projectId, openInApp, copyPath.isPending]);
+		openInApp.mutate({ path: worktreePath, app: resolvedApp, projectId });
+	}, [worktreePath, resolvedApp, projectId, openInApp, copyPath.isPending]);
 
 	const handleOpenInOtherApp = useCallback(
 		(appId: ExternalApp) => {
@@ -85,6 +78,8 @@ export const OpenInMenuButton = memo(function OpenInMenuButton({
 		if (openInApp.isPending || copyPath.isPending) return;
 		copyPath.mutate(worktreePath);
 	}, [worktreePath, copyPath, openInApp.isPending]);
+
+	useHotkey("OPEN_IN_APP", handleOpenInEditor);
 
 	return (
 		<div className="flex items-center no-drag">
@@ -107,17 +102,14 @@ export const OpenInMenuButton = memo(function OpenInMenuButton({
 							"focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
 							"active:scale-[0.98]",
 							isLoading && "opacity-50 pointer-events-none",
-							!currentApp && "opacity-50",
 						)}
 					>
-						{currentApp ? (
+						{currentApp && (
 							<img
 								src={isDark ? currentApp.darkIcon : currentApp.lightIcon}
 								alt=""
 								className="size-3.5 object-contain shrink-0"
 							/>
-						) : (
-							<LuExternalLink className="size-3.5 shrink-0" />
 						)}
 						{branch && (
 							<span className="hidden lg:inline text-muted-foreground truncate max-w-[140px] tabular-nums">
@@ -131,9 +123,9 @@ export const OpenInMenuButton = memo(function OpenInMenuButton({
 				</TooltipTrigger>
 				<TooltipContent side="bottom" sideOffset={6}>
 					{currentApp ? (
-						<HotkeyTooltipContent
+						<HotkeyLabel
 							label={`Open in ${currentApp.displayLabel ?? currentApp.label}`}
-							hotkeyId="OPEN_IN_APP"
+							id="OPEN_IN_APP"
 						/>
 					) : (
 						"Select an editor from the dropdown"
@@ -163,24 +155,28 @@ export const OpenInMenuButton = memo(function OpenInMenuButton({
 				<DropdownMenuContent align="end" className="w-48">
 					<OpenInExternalDropdownItems
 						isDark={isDark}
-						activeApp={defaultApp ?? undefined}
+						activeApp={resolvedApp}
 						onOpenIn={handleOpenInOtherApp}
 						onCopyPath={handleCopyPath}
 						renderAppTrailing={(appId, group) => {
 							if (
-								appId !== defaultApp ||
+								appId !== resolvedApp ||
 								!showOpenInShortcut ||
 								group === "jetbrains"
 							) {
 								return null;
 							}
 							return (
-								<DropdownMenuShortcut>{openInShortcut}</DropdownMenuShortcut>
+								<DropdownMenuShortcut>
+									{openInDisplay.text}
+								</DropdownMenuShortcut>
 							);
 						}}
 						copyPathTrailing={
 							showCopyPathShortcut ? (
-								<DropdownMenuShortcut>{copyPathShortcut}</DropdownMenuShortcut>
+								<DropdownMenuShortcut>
+									{copyPathDisplay.text}
+								</DropdownMenuShortcut>
 							) : null
 						}
 						subContentClassName="w-40"

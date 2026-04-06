@@ -9,6 +9,7 @@ import {
 import { env } from "renderer/env.renderer";
 import { authClient } from "renderer/lib/auth-client";
 import { electronTrpc } from "renderer/lib/electron-trpc";
+import { setHostServiceSecret } from "renderer/lib/host-service-auth";
 import {
 	getHostServiceClient,
 	type HostServiceClient,
@@ -51,8 +52,12 @@ export function HostServiceProvider({ children }: { children: ReactNode }) {
 	// Start a host service for every org
 	useEffect(() => {
 		for (const orgId of orgIds) {
+			const org = organizations?.find((o) => o.id === orgId);
 			utils.hostServiceManager.getLocalPort
-				.ensureData({ organizationId: orgId })
+				.ensureData({
+					organizationId: orgId,
+					organizationName: org?.name ?? undefined,
+				})
 				.catch((err) => {
 					console.error(
 						`[host-service] Failed to start for org ${orgId}:`,
@@ -60,12 +65,18 @@ export function HostServiceProvider({ children }: { children: ReactNode }) {
 					);
 				});
 		}
-	}, [orgIds, utils]);
+	}, [orgIds, organizations, utils]);
 
 	// Query the active org's port reactively
+	const activeOrgName = organizations?.find(
+		(o) => o.id === activeOrganizationId,
+	)?.name;
 	const { data: activePortData } =
 		electronTrpc.hostServiceManager.getLocalPort.useQuery(
-			{ organizationId: activeOrganizationId as string },
+			{
+				organizationId: activeOrganizationId as string,
+				organizationName: activeOrgName ?? undefined,
+			},
 			{ enabled: !!activeOrganizationId },
 		);
 
@@ -73,20 +84,26 @@ export function HostServiceProvider({ children }: { children: ReactNode }) {
 	const services = useMemo(() => {
 		const map = new Map<string, OrgService>();
 
-		const addOrg = (orgId: string, port: number) => {
+		const addOrg = (orgId: string, port: number, secret: string | null) => {
+			const url = `http://127.0.0.1:${port}`;
+			if (secret) {
+				setHostServiceSecret(url, secret);
+			}
 			map.set(orgId, {
 				port,
-				url: `http://127.0.0.1:${port}`,
+				url,
 				client: getHostServiceClient(port),
 			});
 		};
 
 		for (const orgId of orgIds) {
+			const org = organizations?.find((o) => o.id === orgId);
 			const cached = utils.hostServiceManager.getLocalPort.getData({
 				organizationId: orgId,
+				organizationName: org?.name ?? undefined,
 			});
 			if (cached?.port) {
-				addOrg(orgId, cached.port);
+				addOrg(orgId, cached.port, cached.secret ?? null);
 			}
 		}
 
@@ -96,11 +113,15 @@ export function HostServiceProvider({ children }: { children: ReactNode }) {
 			activePortData?.port &&
 			!map.has(activeOrganizationId)
 		) {
-			addOrg(activeOrganizationId, activePortData.port);
+			addOrg(
+				activeOrganizationId,
+				activePortData.port,
+				activePortData.secret ?? null,
+			);
 		}
 
 		return map;
-	}, [orgIds, utils, activeOrganizationId, activePortData]);
+	}, [orgIds, organizations, utils, activeOrganizationId, activePortData]);
 
 	const value = useMemo(() => ({ services }), [services]);
 

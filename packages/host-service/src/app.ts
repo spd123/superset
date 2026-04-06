@@ -3,17 +3,21 @@ import { join } from "node:path";
 import { createNodeWebSocket } from "@hono/node-ws";
 import { trpcServer } from "@hono/trpc-server";
 import { Octokit } from "@octokit/rest";
+import type { MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { createApiClient } from "./api";
 import { createDb } from "./db";
-import type { AuthProvider } from "./providers/auth";
+import { registerWorkspaceFilesystemEventsRoute } from "./filesystem";
+import type { ApiAuthProvider } from "./providers/auth";
 import { LocalGitCredentialProvider } from "./providers/git";
+import type { HostAuthProvider } from "./providers/host-auth";
 import {
 	LocalModelProvider,
 	type ModelProviderRuntimeResolver,
 } from "./providers/model-providers";
 import { ChatRuntimeManager } from "./runtime/chat";
+import { WorkspaceFilesystemManager } from "./runtime/filesystem";
 import type { GitCredentialProvider } from "./runtime/git";
 import { createGitFactory } from "./runtime/git";
 import { PullRequestRuntimeManager } from "./runtime/pull-requests";
@@ -23,11 +27,15 @@ import { appRouter } from "./trpc/router";
 export interface CreateAppOptions {
 	credentials?: GitCredentialProvider;
 	modelProviderRuntimeResolver?: ModelProviderRuntimeResolver;
-	auth?: AuthProvider;
+	auth?: ApiAuthProvider;
+	hostAuth?: HostAuthProvider;
 	cloudApiUrl?: string;
 	dbPath?: string;
 	deviceClientId?: string;
 	deviceName?: string;
+	serviceVersion?: string | null;
+	protocolVersion?: number | null;
+	allowedOrigins?: string[];
 }
 
 export interface CreateAppResult {
@@ -63,6 +71,7 @@ export function createApp(options?: CreateAppOptions): CreateAppResult {
 		github,
 	});
 	pullRequestRuntime.start();
+	const filesystem = new WorkspaceFilesystemManager({ db });
 	const chatRuntime = new ChatRuntimeManager({
 		db,
 		runtimeResolver: modelProviderRuntimeResolver,
@@ -70,22 +79,55 @@ export function createApp(options?: CreateAppOptions): CreateAppResult {
 
 	const runtime = {
 		chat: chatRuntime,
+		filesystem,
 		pullRequests: pullRequestRuntime,
 	};
 	const app = new Hono();
 	const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
-	app.use("*", cors());
+
+	app.use(
+		"*",
+		cors({
+			origin: options?.allowedOrigins ?? [],
+			allowHeaders: ["Content-Type", "Authorization"],
+		}),
+	);
+
+	if (options?.hostAuth) {
+		const { hostAuth } = options;
+		const wsAuth: MiddlewareHandler = async (c, next) => {
+			const token = c.req.query("token");
+			const authorized =
+				(await hostAuth.validate(c.req.raw)) ||
+				(token && (await hostAuth.validateToken(token)));
+			if (!authorized) return c.json({ error: "Unauthorized" }, 401);
+			return next();
+		};
+		app.use("/terminal/*", wsAuth);
+		app.use("/workspace-filesystem/*", wsAuth);
+	}
+
+	registerWorkspaceFilesystemEventsRoute({
+		app,
+		filesystem,
+		upgradeWebSocket,
+	});
 	registerWorkspaceTerminalRoute({
 		app,
 		db,
 		upgradeWebSocket,
 	});
+
+	const hostAuth = options?.hostAuth;
 	app.use(
 		"/trpc/*",
 		trpcServer({
 			router: appRouter,
-			createContext: async () =>
-				({
+			createContext: async (_opts, c) => {
+				const isAuthenticated = hostAuth
+					? await hostAuth.validate(c.req.raw)
+					: false;
+				return {
 					git,
 					github,
 					api,
@@ -93,7 +135,11 @@ export function createApp(options?: CreateAppOptions): CreateAppResult {
 					runtime,
 					deviceClientId: options?.deviceClientId ?? null,
 					deviceName: options?.deviceName ?? null,
-				}) as Record<string, unknown>,
+					serviceVersion: options?.serviceVersion ?? null,
+					protocolVersion: options?.protocolVersion ?? null,
+					isAuthenticated,
+				} as Record<string, unknown>;
+			},
 		}),
 	);
 

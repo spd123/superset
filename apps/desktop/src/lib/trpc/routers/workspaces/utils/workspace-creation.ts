@@ -149,7 +149,7 @@ export async function createWorkspaceFromExternalWorktree({
 
 	try {
 		const knownBranches = await getKnownBranchesSafe(project.mainRepoPath);
-		const baseBranch = resolveWorkspaceBaseBranch({
+		const compareBaseBranch = resolveWorkspaceBaseBranch({
 			workspaceBaseBranch: project.workspaceBaseBranch,
 			defaultBranch: project.defaultBranch,
 			knownBranches,
@@ -175,7 +175,7 @@ export async function createWorkspaceFromExternalWorktree({
 					projectId,
 					path: externalMatch.path,
 					branch,
-					baseBranch,
+					baseBranch: compareBaseBranch,
 					gitStatus: null, // Will be populated by refresh pipeline
 					createdBySuperset: false, // Mark as external
 				})
@@ -204,7 +204,7 @@ export async function createWorkspaceFromExternalWorktree({
 		await setBranchBaseConfig({
 			repoPath: project.mainRepoPath,
 			branch,
-			baseBranch,
+			compareBaseBranch,
 			isExplicit: false,
 		});
 
@@ -212,7 +212,7 @@ export async function createWorkspaceFromExternalWorktree({
 			workspace_id: workspace.id,
 			project_id: project.id,
 			branch,
-			base_branch: baseBranch,
+			base_branch: compareBaseBranch,
 			source: "external_import_auto",
 		});
 
@@ -381,7 +381,7 @@ export async function openExternalWorktree({
 	}
 
 	const knownBranches = await getKnownBranchesSafe(project.mainRepoPath);
-	const baseBranch = resolveWorkspaceBaseBranch({
+	const compareBaseBranch = resolveWorkspaceBaseBranch({
 		workspaceBaseBranch: project.workspaceBaseBranch,
 		defaultBranch: project.defaultBranch,
 		knownBranches,
@@ -393,7 +393,7 @@ export async function openExternalWorktree({
 			projectId,
 			path: worktreePath,
 			branch,
-			baseBranch,
+			baseBranch: compareBaseBranch,
 			gitStatus: {
 				branch,
 				needsRebase: false,
@@ -433,14 +433,14 @@ export async function openExternalWorktree({
 		workspace_id: workspace.id,
 		project_id: project.id,
 		branch,
-		base_branch: baseBranch,
+		base_branch: compareBaseBranch,
 		source: "external_import",
 	});
 
 	await setBranchBaseConfig({
 		repoPath: project.mainRepoPath,
 		branch,
-		baseBranch,
+		compareBaseBranch,
 		isExplicit: false,
 	});
 
