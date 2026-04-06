@@ -93,7 +93,7 @@ Where `<project-id>` is your project's unique ID in Superset (visible in the app
 
 ### Priority Order
 
-Config is resolved with this priority order for each key (`setup`, `teardown`, `run`, `copyFiles`):
+Config is resolved in this order (first found wins, for setup, teardown, run and copyFiles):
 1. `~/.superset/projects/<project-id>/config.json` — user override
 2. `<worktree>/.superset/config.json` — worktree-specific
 3. `<repo>/.superset/config.json` — project default
